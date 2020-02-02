@@ -1,0 +1,374 @@
+---
+title: "Gentrification in Washington D.C."
+author: "Kevin Collins"
+date: "1/24/2020"
+output: pdf_document
+---
+
+```{r, include=FALSE}
+library(tidyverse)
+library(tidycensus)
+library(pander)
+library(sf)
+library(cowplot)
+```
+
+# 1. Introduction
+
+Gentrification is a growing problem across many American cities defined in this paper by the displacement of non-white people in particular neighborhoods, accompanied by increasing median housing prices and increasing median incomes. In the paper, "Explicating Divided Approaches to Gentrification and Growing Income Inequality," Brown-Saracino (2017) discusses the disparate concepts of gentrification, namely that it is inevitable and omnipresent or that it is regionally specific and much smaller in impact than some researchers present. A major finding of the second school of thought is that the impact and presence of gentrification differs in every city. Some cities have a cohort of non-white gentrifiers, some have more traditional gentrification of low-income neighborhoods, and others experience little to no gentrification at all. Schwirian (1983) describes the "Invasion-Succession" model of neighborhood change where in a non-dominant racial group moves into a neighborhood and a battle for housing ensues where one group eventually falters, resulting in gentrification or a return to demographic status quo. With both of these papers in mind, I will explore the presence of gentrification in Washington DC, a city which Manduca (2019) has found to consistently have some of the worst income inequality in the nation over several decades. Brown-Saracino states that "Quantitative analyses emphasize that location and other neighborhood amenities and advantages, and especially the racial demographics of neighborhood populations, determine which neighborhoods gentrify." Therefore, I decided to focus on one city and explore what racial, educational, and income-level characteristics go hand-in-hand with increasing median housing values in a given census tract. The data used in this analysis comes from the 2000 Decennial Census and the 2010 and 2018 5-year ACS. Two primary variables being used are median housing value and the race variable.
+
+
+```{r, include=FALSE}
+options(tigris_use_cache = TRUE)
+```
+
+
+```{r, include=FALSE}
+#census data
+census_2000 <- read_csv("2000_data.csv")
+```
+
+
+```{r, include=FALSE}
+#reading in data without geometry files
+acs_2018 <- get_acs(geography = "tract",
+                    state = "DC",
+                    year = 2018,
+                    survey = "acs5",
+                    variables = c(median_income = "B06011_001",
+                                  median_value = "B25077_001",
+                                  total_pop = "B03002_001",
+                                  white_pop = "B03002_003",
+                                  black_pop = "B03002_004",
+                                  hispanic_pop = "B03002_012"),
+                    output = "wide")
+
+acs_2010 <- get_acs(geography = "tract",
+                    state = "DC",
+                    year = 2010,
+                    survey = "acs5",
+                    variables = c(median_income = "B06011_001",
+                                  median_value = "B25077_001",
+                                  total_pop = "B03002_001",
+                                  white_pop = "B03002_003",
+                                  black_pop = "B03002_004",
+                                  hispanic_pop = "B03002_012"),
+                    output = "wide")
+
+#reading geo data
+acs_geo <- get_acs(geography = "tract",
+                   state = "DC",
+                   year = 2010,
+                   survey = "acs5",
+                   variables = c(total_units = "B07013_001",
+                                 rented_units = "B07013_003",
+                                 median_income = "B06011_001",
+                                 median_value = "B25077_001",
+                                 total_pop = "B02001_001",
+                                 white_pop = "B02001_002"),
+                   geometry = TRUE,
+                   output = "wide")
+
+```
+
+```{r, include=FALSE}
+#cleaning ALL data
+census_2000 <- census_2000 %>%
+  select(-c(4,5,6,7,9,12,13,14,15,16,18:24))
+
+acs_2010 <- acs_2010 %>%
+  select(-c(4,6,8,10,12,14))
+
+acs_2018 <- acs_2018 %>%
+  select(-c(4,6,8,10,12,14))
+
+acs_geo <- acs_geo %>%
+  select(GEOID, geometry)
+```
+
+```{r, include=FALSE}
+census_join <- census_2000 %>%
+  select(1, 3:7, 16, 17) %>%
+  mutate(year = "2000")
+acs10_join <- acs_2010 %>%
+  mutate(year = "2010")
+acs18_join <- acs_2018 %>%
+  mutate(year = "2018")
+
+colnames(census_join) <- c("GEOID", "NAME","total_popE","white_popE", "black_popE", "hispanic_popE", "median_incomeE", "median_valueE","year")
+census_join <- census_join[-1,]
+census_join$median_valueE <- as.numeric(census_join$median_valueE)
+census_join$total_popE <- as.numeric(census_join$total_popE)
+census_join$white_popE <- as.numeric(census_join$white_popE)
+census_join$black_popE <- as.numeric(census_join$black_popE)
+census_join$hispanic_popE <- as.numeric(census_join$hispanic_popE)
+census_join$median_incomeE <- as.numeric(census_join$median_incomeE)
+
+census_join <- census_join %>%
+  mutate(income_pctle = ntile(census_join$median_incomeE, 5))
+acs10_join <- acs10_join %>%
+  mutate(income_pctle = ntile(acs10_join$median_incomeE, 5))
+acs18_join <- acs18_join %>%
+  mutate(income_pctle = ntile(acs18_join$median_incomeE, 5))
+
+joined_data <- rbind(census_join, acs10_join, acs18_join)
+```
+
+
+```{r, include = FALSE}
+joined_data <- joined_data %>%
+  mutate(prop_black = black_popE/total_popE) %>%
+  mutate(prop_white = white_popE/total_popE) %>%
+  mutate(prop_hispanic = hispanic_popE/total_popE)
+
+joined_data <- joined_data %>%
+  group_by(GEOID) %>%
+  mutate(diff_value = median_valueE[year=="2018"] - median_valueE[year=="2000"]) %>%
+  mutate(diff_income = median_incomeE[year=="2018"] - median_incomeE[year=="2000"]) %>%
+  mutate(racial_shift = prop_white[year=="2018"] - prop_white[year=="2000"]) %>%
+  mutate(racial_shift_10 = prop_white[year=="2010"] - prop_white[year=="2000"]) %>%
+  mutate(racial_shift_8 = prop_white[year=="2018"] - prop_white[year=="2010"]) %>% 
+  mutate(diff_value_10 = median_valueE[year=="2010"] - median_valueE[year=="2000"]) %>%
+  mutate(diff_value_8 = median_valueE[year=="2018"] - median_valueE[year=="2010"]) %>%
+  ungroup()
+
+```
+
+\pagebreak
+# 2. Preliminary Housing Analysis
+
+To begin our analysis, we will take a look at changing DC housing values from the years 2000 to 2018. First, the below graph demonstrates the changing distribution of median house values for the entirety of DC.
+
+```{r, echo=FALSE, warning=FALSE}
+joined_data %>%
+  ggplot(aes(x = year, y = median_valueE)) +
+  geom_violin(fill = "steelblue1", color = "steelblue4") +
+  xlab("Year") +
+  ylab("Value ($)") +
+  ggtitle("Median Value for Owner-Occupied Housing Units") +
+  theme_classic()
+```
+
+Clearly, there has been a dramatic shift in housing values over the past 18 years. Not only are higher-priced neighborhoods becoming more common, but there is also a clear loss of lower-valued housing that would be more affordable for lower-income families, which certainly still exist. Although Manduca notes that DC has continually gotten richer and richer in terms of its populace, the increased housing prices still demonstrate a serious level of gentrification.
+
+Of course, housing prices are not the only indicator of gentrification. An influx of white people into a traditionally non-white neighborhood is a strong indicator of the displacement of lower-income households. Below are the correlations between an increase in the proportion of white people in a given tract and an increase in median housing value and median income.
+
+```{r, echo=FALSE}
+
+pander(joined_data %>%
+  summarize(`Median Housing Value` = cor(racial_shift,
+                                         diff_value,
+                                         use="complete"),
+            `Median Income` = cor(racial_shift,
+                                  diff_income,
+                                  use="complete")))
+```
+
+So, as DC continues to get both richer and more expensive to live in, it is not its original populace that seems to be doing so. Instead, the neighborhoods that are getting more expensive and richer have a medium/strong positive correlation with those that are getting whiter, which indicates some level of displacement of nonwhite people. These correlations are illustrated in further detail in the following plots.
+
+```{r, echo=FALSE, warning=FALSE}
+joined_data %>%
+  ggplot(aes(x = racial_shift,
+             y = diff_value)) +
+  geom_point(color = "grey") +
+  geom_smooth(method = "lm") +
+  theme_classic()
+```
+
+```{r, echo=FALSE, warning=FALSE}
+joined_data %>%
+  ggplot(aes(x = racial_shift,
+             y = diff_income)) +
+  geom_point(color = "grey") +
+  geom_smooth(method = "lm") +
+  theme_classic()
+```
+
+# Where is gentrification occuring?
+
+A logical next step following evidence of gentrification is to inquire into what sort of neighborhood characteristics precede this increase in income and housing prices. Gentrification is often associated with predominantly black neighborhoods being "invaded" by white gentrifiers, as described in the Invasion-Succession model, so it is reasonable to assume that a higher proportion of black people living in a given tract in 2000 will correlate with an increase in housing prices over the next 18 years.
+
+```{r, echo=FALSE}
+predictor <- joined_data %>% filter(year=="2000")
+
+pander(predictor %>%
+  summarize(`Housing Value Increase` = cor(prop_black,
+    diff_value,
+    use = "complete")))
+
+```
+
+Instead of a predicted positive correlation, we actually have a negative correlation, meaning that a neighborhood with a higher proportion of black people will more likely see a decrease in median housing values. However, we did previously see a correlation between neighborhoods getting whiter and increased housing prices, so surely there must be another factor at play here.
+
+Instead of looking for a correlation across the entirety of the metro area, let us map out median housing values in DC at the tract level.
+
+```{r, include=FALSE}
+#join with geometry data
+map <- left_join(joined_data, acs_geo, by = "GEOID")
+```
+
+```{r, echo=FALSE}
+map %>%
+  ggplot(aes(fill = median_valueE)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_gradient(low = "white", 
+                      high = "red4", 
+                      labels = scales::dollar_format()) +
+  theme_classic() +
+  theme(legend.title = element_blank()) +
+  facet_wrap(~year) +
+  ggtitle("Median Housing Value for Census Tracts in D.C.")
+```
+
+Here we see that the already expensive tracts continue to get more expensive, as well as significant increases in housing values in the center of DC, which was relatively inexpensive at the turn of the centiury. 
+
+Theses following maps display the difference in median housing values from 2000-2010 and 2010-2018, and then finally the total difference from 2000-2018.
+
+```{r, echo=FALSE}
+h1 <- map %>%
+  ggplot(aes(fill = diff_value_10)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_gradient(low = "white", 
+                      high = "red", 
+                      labels = scales::dollar_format()) +
+  ggtitle("2000-2010") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+
+h2 <- map %>%
+  ggplot(aes(fill = diff_value_8)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+    scale_fill_gradient(low = "white", 
+                      high = "red4", 
+                      labels = scales::dollar_format()) +
+  ggtitle("2010-2018") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+
+#cowplot to make side by side maps
+plot_grid(h1, h2)
+```
+
+```{r, echo=FALSE}
+map %>%
+  ggplot(aes(fill = diff_value)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+    scale_fill_gradient(low = "white", 
+                      high = "red4", 
+                      labels = scales::dollar_format()) +
+  ggtitle("Difference in Median Housing Value 2000-2018") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+```
+
+
+Now, we will explore not just the geographic elements of increasing housing prices, but also shifts in racial composition. 
+
+```{r, echo=FALSE}
+map %>%
+  ggplot(aes(fill = prop_white)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_viridis_c() +
+  facet_wrap(~year) +
+  ggtitle("Proportion of White People Across Census Tracts") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+```
+
+The first major takeaway is the stark racial segregation at play in DC. The white neighborhoods are very dense in the western part of the city, and there is almost an exact line down the middle of the region that divides white neighborhoods from more racially diverse ones. 
+
+These three maps also display an "invasion" of white populations into central DC, much like we saw sharp increases in housing prices in central DC. Just like before, the following maps display tracts with increasing proportions of white people over given time periods.
+
+```{r, echo=FALSE}
+p1 <- map %>%
+  ggplot(aes(fill = racial_shift_10)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("2000-2010") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+
+p2 <- map %>%
+  ggplot(aes(fill = racial_shift_8)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("2010-2018") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+
+plot_grid(p1, p2)
+```
+
+```{r, echo=FALSE}
+map %>%
+  ggplot(aes(fill = racial_shift)) +
+  geom_sf(color = NA, aes(geometry = geometry)) +
+  coord_sf(datum = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Increase in Proportion of White People 2000-2018") +
+  theme_classic() +
+  theme(legend.title = element_blank())
+
+```
+
+Drawing from these maps, two major insights distinguish themselves. Firstly, we see that tracts with the greatest racial shifts and those with the greatest increase in housing values are in the same area, namely central DC. So while, we attained a negative correlation earlier, it becomes clear that geography plays a significant role in the process of gentrification. It appears that tracts in close proximity to white, wealthy tracts are more likely to become white and wealthy. Secondly, from the 2000-2010 and 2010-2018 difference maps, we see a "wave" of gentrification moving across the city. In between the two time periods, the tracts that are experiencing gentrification shift further and further eastward towards the less expensive, more racially diverse neighborhoods.
+
+# 4. Individual Characterization
+
+Finally, we will take a look at the ten tracts that experienced the greatest increase in housing values over the 18 year period and some characteristics of the neighborhood in 2000.
+
+```{r, echo=FALSE}
+top_10 <- predictor %>%
+  arrange(desc(diff_value)) %>%
+  head(10)
+
+top_10 <- left_join(top_10, census_2000, by  = c("GEOID" = "FIPS"))
+
+top_10$`Population 25 Years and over` <- as.numeric(top_10$`Population 25 Years and over`)
+top_10$`Population 25 Years and Over: Bachelor's Degree` <- as.numeric(top_10$`Population 25 Years and Over: Bachelor's Degree`)
+top_10$`Population 25 Years and Over: Master's Degree` <- as.numeric(top_10$`Population 25 Years and Over: Master's Degree`)
+top_10$`Population 25 Years and Over: Professional School Degree` <- as.numeric(top_10$`Population 25 Years and Over: Professional School Degree`)
+top_10$`Population 25 Years and Over: Doctorate Degree` <- as.numeric(top_10$`Population 25 Years and Over: Doctorate Degree`)
+
+top_10 <- top_10 %>%
+  mutate(`Proportion of Population 25 Years and Over with a Bachelor's Degree or Higher` = (`Population 25 Years and Over: Doctorate Degree` + `Population 25 Years and Over: Professional School Degree` + `Population 25 Years and Over: Master's Degree` + `Population 25 Years and Over: Bachelor's Degree`)/`Population 25 Years and over`)
+
+top_10_clean <- top_10 %>%
+  select(c(2, 8, 10:12, 14, 15, 16, 37))
+
+colnames(top_10_clean) <- c("Census Tract",
+                            "Median Home Value in 2000",
+                            "Income Quintile in 2000",
+                            "Proportion of Black People in 2000",
+                            "Proportion of White People in 2000",
+                            "Change in Median Home Value 2000-2018",
+                            "Change in Median Income 2000-2018",
+                            "Change in Proportion of White People 2000-2018",
+                            "Proportion of Population 25 Years and Over with a Bachelor's Degree or Higher")
+  
+pander(top_10_clean)
+```
+
+This evaluation confirms several theories about gentrification talked about in the Brown-Saracino paper, as well as ideas about increasing inequality given by Manduca. Firstly, we identify tracts that were in the lower income quintiles, predominantly nonwhite and with low educational attainment in 2000 that experienced siginificant changes in racial composition, income, and housing values. However, some tracts were already quite white and wealthy in 2000, but this aligns perfectly Manduca's evidence of DC continually getting wealthier and wealthier. 
+
+One particularly interesting finding from this table is census tract 68.04, which has seen a massive spike in housing values, in spite of being an already low-income neighborhood with a decrease in median income and very little increase in the proportion of white people. Based on the findings of this analysis and the research discussed earlier, this tract appears to be next in line for the ever increasing gentrification of Washington DC.
+
+In conclusion, although Brown-Saracino discusses the non-uniformity of gentrification across the nation, we see clear evidence of very traditional white gentrification taking place in DC. Furthermore, due to the uniquely intense levels of segregation within the city, we see an emphasis on geographical proximity to other gentrified tracts as a high-risk indicator of potential gentrification.
+
+# 5. Bibliography
+
+Brown-Saracino, Japonica. 2017. "Explicating Divided Approches to Gentrification and Growing Income Inequality." *Annual Review of Sociology.* 43:515-539.
+
+Schwirian, Kent P. 1983. "Models of Neighborhood Change." *Annual Review of Sociology.* 9:83-102.
+
+Manduca, Robert A. 2019. "The Contribution of National Income Inequality to Regional Economic Divergence." *Social Forces.* 98:622-648.
+
+
+
